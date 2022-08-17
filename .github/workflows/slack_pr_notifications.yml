@@ -2,7 +2,7 @@ name: Slack Pull Request Open Notification
 
 on:
   schedule:
-    - cron:  '43 9,2 * * *'
+    - cron:  '* * * * *'
   pull_request:
     types: [opened, reopened]
 
