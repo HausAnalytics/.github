@@ -7,7 +7,13 @@
 ## Code Changes
 
 ## (Optional) AI Usage Notes
-Tool used (Claude, Cursor, etc), prompts used, tips and tricks, lessons learned, etc.
+
+### Tools Used
+(e.g., Claude, Cursor)
+
+### Prompts
+
+### Tips/Tricks/Learnings
 
 ## Related Pull Requests
 
