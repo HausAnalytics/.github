@@ -6,6 +6,12 @@
 
 ## Code Changes
 
+## Related Pull Requests
+
+## How I Know This Works
+
+## Notes & Questions for Reviewers
+
 ## (Optional) AI Usage Notes
 
 ### Tools Used
@@ -14,12 +20,6 @@
 ### Prompts
 
 ### Tips/Tricks/Learnings
-
-## Related Pull Requests
-
-## How I Know This Works
-
-## Notes & Questions for Reviewers
 
 ### Checks
 - [ ] Changes in this PR follows Haus' [code contribution guidelines](https://www.notion.so/Code-Governance-a8c1f76ab68f4950a0d87559e19ebaa3) or if it breaks guidelines I've explained why it's necessary.
