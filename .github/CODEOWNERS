@@ -7,10 +7,10 @@
 # - @HausAnalytics/squad-infra-eng: Has admin/maintain access to the repository
 
 # General repository ownership
-* @HausAnalytics/squad-infra-eng @HausAnalytics/security
+* @HausAnalytics/squad-infra-eng
 
 # Require squad-infra-eng approval for changes to .github directory
-.github/ @HausAnalytics/security @HausAnalytics/squad-infra-eng
+.github/ @HausAnalytics/squad-infra-eng
 
 # Require security approval for .aikido files in root directory
 .aikido @HausAnalytics/security
