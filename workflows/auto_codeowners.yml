@@ -40,6 +40,16 @@ jobs:
                   continue;
                 }
                 
+                // Skip repos older than 24 hours
+                const createdAt = new Date(repo.created_at);
+                const now = new Date();
+                const hoursSinceCreation = (now - createdAt) / (1000 * 60 * 60);
+                
+                if (hoursSinceCreation > 24) {
+                  core.info(`⏭️  Skipping repo older than 24 hours: ${repo.name}`);
+                  continue;
+                }
+                
                 // Check if CODEOWNERS already exists
                 try {
                   await github.rest.repos.getContent({
