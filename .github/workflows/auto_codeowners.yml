@@ -21,7 +21,7 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const codeownersContent = "# Code ownership rules\n.github/ @HausAnalytics/squad-infra-eng\n";
-            const path = ".github/CODEOWNERS";
+            const path = "CODEOWNERS";
 
             // Get all repositories in the organization
             const repos = await github.paginate(github.rest.repos.listForOrg, {
