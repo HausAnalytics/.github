@@ -1,0 +1,203 @@
+name: Audit and Fix CODEOWNERS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  audit-codeowners:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Audit and fix CODEOWNERS across all repositories
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_ORG_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const infraEngTeam = '@HausAnalytics/squad-infra-eng';
+            const timestamp = new Date().toISOString();
+            const codeownersComment = "# This file is managed by the audit_codeowners.yml GitHub Action\n# The action ensures:\n# 1. CODEOWNERS files are located in .github/ directory\n# 2. All teams listed have write permissions to the repository\n# 3. squad-infra-eng team is included with .github/ ownership\n# Last updated: " + timestamp + "\n\n";
+
+            // Get all repositories in the organization
+            const repos = await github.paginate(github.rest.repos.listForOrg, {
+              org: owner,
+              type: 'all',
+              per_page: 100
+            });
+
+            core.info(`Found ${repos.length} repositories to audit`);
+
+            for (const repo of repos) {
+              try {
+                // Skip archived repos
+                if (repo.archived) {
+                  core.info(`Skipping archived repo: ${repo.name}`);
+                  continue;
+                }
+
+                // Skip repos with no default branch
+                if (!repo.default_branch) {
+                  core.info(`Skipping empty repo: ${repo.name}`);
+                  continue;
+                }
+
+                core.info(`Processing ${repo.name}...`);
+
+                let codeownersContent = '';
+                let codeownersLocation = null;
+                let existingFileSha = null;
+
+                // Check for CODEOWNERS in root
+                try {
+                  const rootFile = await github.rest.repos.getContent({
+                    owner: owner,
+                    repo: repo.name,
+                    path: 'CODEOWNERS'
+                  });
+                  codeownersLocation = 'root';
+                  codeownersContent = Buffer.from(rootFile.data.content, 'base64').toString('utf-8');
+                  existingFileSha = rootFile.data.sha;
+                  core.info(`Found CODEOWNERS in root of ${repo.name}`);
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+
+                // Check for CODEOWNERS in .github/
+                try {
+                  const githubFile = await github.rest.repos.getContent({
+                    owner: owner,
+                    repo: repo.name,
+                    path: '.github/CODEOWNERS'
+                  });
+                  if (codeownersLocation === 'root') {
+                    core.warning(`${repo.name} has CODEOWNERS in both locations, will consolidate to .github/`);
+                  } else {
+                    codeownersLocation = 'github';
+                    codeownersContent = Buffer.from(githubFile.data.content, 'base64').toString('utf-8');
+                    existingFileSha = githubFile.data.sha;
+                    core.info(`Found CODEOWNERS in .github/ of ${repo.name}`);
+                  }
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+
+                // Extract all teams from CODEOWNERS content
+                const teamPattern = /@[\w-]+\/[\w-]+/g;
+                const teams = [];
+                if (codeownersContent) {
+                  const matches = codeownersContent.matchAll(teamPattern);
+                  for (const match of matches) {
+                    const team = match[0];
+                    if (!teams.includes(team)) {
+                      teams.push(team);
+                    }
+                  }
+                }
+
+                // Ensure infra-eng team is in the list
+                const infraEngRule = `.github/ ${infraEngTeam}`;
+                let needsInfraEng = true;
+                if (codeownersContent) {
+                  if (codeownersContent.includes(infraEngRule)) {
+                    needsInfraEng = false;
+                  } else if (!teams.includes(infraEngTeam)) {
+                    teams.push(infraEngTeam);
+                  }
+                }
+
+                // Build final content
+                let finalContent = '';
+                
+                // Add comment header
+                finalContent += codeownersComment;
+
+                // Add infra-eng rule if needed
+                if (needsInfraEng) {
+                  finalContent += `# Code ownership rules\n${infraEngRule}\n\n`;
+                  if (!teams.includes(infraEngTeam)) {
+                    teams.push(infraEngTeam);
+                  }
+                }
+
+                // Add existing content (strip old comments at the top if they exist)
+                if (codeownersContent) {
+                  // Remove existing managed header if present
+                  let cleanContent = codeownersContent;
+                  const headerStart = cleanContent.indexOf('# This file is managed by');
+                  if (headerStart !== -1) {
+                    const headerEnd = cleanContent.indexOf('\n\n', headerStart);
+                    if (headerEnd !== -1) {
+                      cleanContent = cleanContent.substring(headerEnd + 2);
+                    }
+                  }
+                  
+                  // Remove infra-eng rule if it exists (we already added it)
+                  if (needsInfraEng === false) {
+                    finalContent += cleanContent;
+                  } else {
+                    // Add the rest of the content, excluding the infra-eng rule we just added
+                    finalContent += cleanContent;
+                  }
+                } else {
+                  // No existing content, just the infra-eng rule
+                  core.info(`No CODEOWNERS found in ${repo.name}, creating new one`);
+                }
+
+                // Write to .github/CODEOWNERS
+                await github.rest.repos.createOrUpdateFileContents({
+                  owner: owner,
+                  repo: repo.name,
+                  path: '.github/CODEOWNERS',
+                  message: 'Audit and update CODEOWNERS file',
+                  content: Buffer.from(finalContent).toString('base64'),
+                  branch: repo.default_branch,
+                  ...(codeownersLocation === 'github' && existingFileSha && { sha: existingFileSha })
+                });
+
+                core.info(`Updated .github/CODEOWNERS in ${repo.name}`);
+
+                // Delete root CODEOWNERS if it exists
+                if (codeownersLocation === 'root') {
+                  await github.rest.repos.deleteFile({
+                    owner: owner,
+                    repo: repo.name,
+                    path: 'CODEOWNERS',
+                    message: 'Move CODEOWNERS to .github/ directory',
+                    sha: existingFileSha,
+                    branch: repo.default_branch
+                  });
+                  core.info(`Deleted root CODEOWNERS from ${repo.name}`);
+                }
+
+                // Add write permissions for all teams found in CODEOWNERS
+                for (const team of teams) {
+                  try {
+                    // Extract team slug from @org/team-name format
+                    const teamMatch = team.match(/@[\w-]+\/([\w-]+)/);
+                    if (teamMatch) {
+                      const teamSlug = teamMatch[1];
+                      
+                      await github.rest.teams.addOrUpdateRepoPermissionsInOrg({
+                        org: owner,
+                        team_slug: teamSlug,
+                        owner: owner,
+                        repo: repo.name,
+                        permission: 'push'
+                      });
+                      
+                      core.info(`Added write permissions for ${team} to ${repo.name}`);
+                    }
+                  } catch (teamError) {
+                    core.warning(`Failed to add team ${team} to ${repo.name}: ${teamError.message}`);
+                  }
+                }
+
+              } catch (error) {
+                core.warning(`Failed to process ${repo.name}: ${error.message}`);
+              }
+            }
+
+            core.info('Finished auditing all repositories');
