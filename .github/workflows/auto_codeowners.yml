@@ -2,9 +2,9 @@ name: Auto create CODEOWNERS on new repos
 
 on:
   schedule:
-    # Run every day at 2 AM UTC
+    # Run each day at 2 AM UTC
     - cron: "0 2 * * *"
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -36,7 +36,7 @@ jobs:
               try {
                 // Skip archived repos
                 if (repo.archived) {
-                  core.info(`⏭️  Skipping archived repo: ${repo.name}`);
+                  core.info(`Skipping archived repo: ${repo.name}`);
                   continue;
                 }
                 
@@ -46,7 +46,7 @@ jobs:
                 const hoursSinceCreation = (now - createdAt) / (1000 * 60 * 60);
                 
                 if (hoursSinceCreation > 24) {
-                  core.info(`⏭️  Skipping repo older than 24 hours: ${repo.name}`);
+                  core.info(`Skipping repo older than 24 hours: ${repo.name}`);
                   continue;
                 }
                 
@@ -57,7 +57,7 @@ jobs:
                     repo: repo.name,
                     path: path
                   });
-                  core.info(`⏭️  CODEOWNERS already exists in ${repo.name}`);
+                  core.info(`CODEOWNERS already exists in ${repo.name}`);
                   continue;
                 } catch (error) {
                   if (error.status !== 404) throw error;
@@ -66,7 +66,7 @@ jobs:
                 
                 // Check if repo has any commits (has a default branch)
                 if (!repo.default_branch) {
-                  core.info(`⏭️  Skipping empty repo: ${repo.name}`);
+                  core.info(`Skipping empty repo: ${repo.name}`);
                   continue;
                 }
                 
@@ -80,11 +80,25 @@ jobs:
                   branch: repo.default_branch
                 });
                 
-                core.info(`✅ CODEOWNERS added to ${repo.name}`);
+                core.info(`CODEOWNERS added to ${repo.name}`);
+                
+                // Add squad-infra-eng team with write permissions
+                try {
+                  await github.rest.teams.addOrUpdateRepoPermissionsInOrg({
+                    org: owner,
+                    team_slug: 'squad-infra-eng',
+                    owner: owner,
+                    repo: repo.name,
+                    permission: 'push'  // push = write access
+                  });
+                  core.info(`Added squad-infra-eng team with write permissions to ${repo.name}`);
+                } catch (teamError) {
+                  core.warning(`Failed to add team to ${repo.name}: ${teamError.message}`);
+                }
                 
               } catch (error) {
-                core.warning(`❌ Failed to process ${repo.name}: ${error.message}`);
+                core.warning(`Failed to process ${repo.name}: ${error.message}`);
               }
             }
 
-            core.info('🎉 Finished processing all repositories');
+            core.info('Finished processing all repositories');
