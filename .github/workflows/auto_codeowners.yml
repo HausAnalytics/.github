@@ -2,8 +2,8 @@ name: Auto create CODEOWNERS on new repos
 
 on:
   schedule:
-    # Run each day at 2 AM UTC
-    - cron: "0 2 * * *"
+    # Run every 4 hours
+    - cron: "0 */4 * * *"
   workflow_dispatch:
 
 permissions:
@@ -50,37 +50,64 @@ jobs:
                   continue;
                 }
                 
-                // Check if CODEOWNERS already exists
-                try {
-                  await github.rest.repos.getContent({
-                    owner: owner,
-                    repo: repo.name,
-                    path: path
-                  });
-                  core.info(`CODEOWNERS already exists in ${repo.name}`);
-                  continue;
-                } catch (error) {
-                  if (error.status !== 404) throw error;
-                  // File doesn't exist, continue to create it
-                }
-                
                 // Check if repo has any commits (has a default branch)
                 if (!repo.default_branch) {
                   core.info(`Skipping empty repo: ${repo.name}`);
                   continue;
                 }
                 
-                // Create CODEOWNERS file
+                // Check if CODEOWNERS already exists and if it has the infra-eng rule
+                let existingFile = null;
+                let needsUpdate = false;
+                
+                try {
+                  const fileData = await github.rest.repos.getContent({
+                    owner: owner,
+                    repo: repo.name,
+                    path: path
+                  });
+                  
+                  existingFile = fileData.data;
+                  const existingContent = Buffer.from(existingFile.content, 'base64').toString('utf-8');
+                  
+                  // Check if the infra-eng rule already exists
+                  if (existingContent.includes('.github/ @HausAnalytics/squad-infra-eng')) {
+                    core.info(`CODEOWNERS already has infra-eng rule in ${repo.name}`);
+                    continue;
+                  } else {
+                    // File exists but doesn't have the rule, we need to add it
+                    needsUpdate = true;
+                    core.info(`CODEOWNERS exists but missing infra-eng rule in ${repo.name}, adding it`);
+                  }
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                  // File doesn't exist, we'll create it
+                  core.info(`CODEOWNERS doesn't exist in ${repo.name}, creating it`);
+                }
+                
+                // Prepare the content
+                let finalContent;
+                if (needsUpdate && existingFile) {
+                  // Prepend our rule to the existing content
+                  const existingContent = Buffer.from(existingFile.content, 'base64').toString('utf-8');
+                  finalContent = codeownersContent + existingContent;
+                } else {
+                  // New file
+                  finalContent = codeownersContent;
+                }
+                
+                // Create or update CODEOWNERS file
                 await github.rest.repos.createOrUpdateFileContents({
                   owner: owner,
                   repo: repo.name,
                   path: path,
-                  message: "Add default CODEOWNERS file",
-                  content: Buffer.from(codeownersContent).toString("base64"),
-                  branch: repo.default_branch
+                  message: needsUpdate ? "Add infra-eng team to CODEOWNERS" : "Add default CODEOWNERS file",
+                  content: Buffer.from(finalContent).toString("base64"),
+                  branch: repo.default_branch,
+                  ...(existingFile && { sha: existingFile.sha })
                 });
                 
-                core.info(`CODEOWNERS added to ${repo.name}`);
+                core.info(`CODEOWNERS updated in ${repo.name}`);
                 
                 // Add squad-infra-eng team with write permissions
                 try {
