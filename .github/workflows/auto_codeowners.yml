@@ -1,9 +1,9 @@
 name: Auto create CODEOWNERS on new repos
 
 on:
-  schedule:
+#  schedule:
     # Run every 4 hours
-    - cron: "0 */4 * * *"
+#    - cron: "0 */4 * * *"
   workflow_dispatch:
 
 permissions:
