@@ -1,0 +1,282 @@
+name: "Organization Stale Issues and PRs Management"
+
+on:
+  # schedule:
+  #   # Run daily at 1:30 AM UTC
+  #   - cron: "30 1 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run mode - only log what would be done"
+        required: false
+        default: false
+        type: boolean
+      org_name:
+        description: "Organization name to scan"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+env:
+  DAYS_BEFORE_STALE: 30
+  DAYS_BEFORE_CLOSE: 5
+  STALE_LABEL: "stale"
+  STALE_ISSUE_MESSAGE: "This issue is stale because it has been open 30 days with no activity. Remove stale label or comment or this will be closed in 5 days."
+  STALE_PR_MESSAGE: "This PR is stale because it has been open 30 days with no activity. Remove stale label or comment or this will be closed in 5 days."
+  CLOSE_ISSUE_MESSAGE: "This issue was closed because it has been stalled for 5 days with no activity."
+  CLOSE_PR_MESSAGE: "This PR was closed because it has been stalled for 5 days with no activity."
+
+jobs:
+  get-repositories:
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.get-repos.outputs.repos }}
+    steps:
+      - name: Get non-archived repositories
+        id: get-repos
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORG_TOKEN }}
+        run: |
+          ORG="${{ inputs.org_name || github.repository_owner }}"
+
+          echo "Fetching non-archived repositories for organization: $ORG"
+
+          # Get all non-archived repos with issues enabled
+          REPOS=$(gh api graphql -f query='
+            query($org: String!, $cursor: String) {
+              organization(login: $org) {
+                repositories(first: 100, after: $cursor, isArchived: false) {
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                  nodes {
+                    name
+                    hasIssuesEnabled
+                  }
+                }
+              }
+            }
+          ' -f org="$ORG" --paginate --jq '.data.organization.repositories.nodes[] | select(.hasIssuesEnabled) | .name' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+
+          echo "Found repositories: $REPOS"
+          echo "repos=$REPOS" >> $GITHUB_OUTPUT
+
+  process-stale:
+    needs: get-repositories
+    runs-on: ubuntu-latest
+    if: ${{ needs.get-repositories.outputs.repos != '[]' && needs.get-repositories.outputs.repos != '' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        repo: ${{ fromJson(needs.get-repositories.outputs.repos) }}
+    steps:
+      - name: Process stale issues and PRs for ${{ matrix.repo }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORG_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          ORG="${{ inputs.org_name || github.repository_owner }}"
+          REPO="${{ matrix.repo }}"
+          FULL_REPO="$ORG/$REPO"
+
+          # Initialize statistics counters
+          ISSUES_FETCHED=0
+          PRS_FETCHED=0
+          ISSUES_MARKED_STALE=0
+          PRS_MARKED_STALE=0
+          ISSUES_CLOSED=0
+          PRS_CLOSED=0
+          OPERATIONS_PERFORMED=0
+          API_CALLS=0
+
+          echo ""
+          echo "========================================"
+          echo "Starting the stale action process..."
+          echo "========================================"
+          echo ""
+          echo "Repository: $FULL_REPO"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Mode: DRY RUN (no changes will be made)"
+          fi
+          echo ""
+
+          # Calculate dates
+          STALE_DATE=$(date -d "-${{ env.DAYS_BEFORE_STALE }} days" -Iseconds)
+          CLOSE_DATE=$(date -d "-${{ env.DAYS_BEFORE_CLOSE }} days" -Iseconds)
+
+          echo "Configuration:"
+          echo "  - Days before stale: ${{ env.DAYS_BEFORE_STALE }}"
+          echo "  - Days before close: ${{ env.DAYS_BEFORE_CLOSE }}"
+          echo "  - Stale label: ${{ env.STALE_LABEL }}"
+          echo "  - Stale threshold: $STALE_DATE"
+          echo "  - Close threshold: $CLOSE_DATE"
+          echo ""
+
+          # Fetch all open issues (excluding PRs)
+          echo "Fetching open issues..."
+          ISSUES_JSON=$(gh api "repos/$FULL_REPO/issues?state=open&per_page=100" --paginate 2>/dev/null || echo "[]")
+          ((API_CALLS++)) || true
+
+          # Filter to only issues (not PRs) and count - using tab delimiter to handle pipes in titles
+          ISSUES_LIST=$(echo "$ISSUES_JSON" | jq -r '.[] | select(.pull_request == null) | "\(.number)\t\(.title)\t\(.updated_at)\t\(.labels | map(.name) | join(","))"' 2>/dev/null || echo "")
+          ISSUES_FETCHED=$(echo "$ISSUES_LIST" | grep -c . || echo "0")
+
+          # Fetch all open PRs
+          echo "Fetching open pull requests..."
+          PRS_JSON=$(gh api "repos/$FULL_REPO/pulls?state=open&per_page=100" --paginate 2>/dev/null || echo "[]")
+          ((API_CALLS++)) || true
+
+          # Using tab delimiter to handle pipes in titles
+          PRS_LIST=$(echo "$PRS_JSON" | jq -r '.[] | "\(.number)\t\(.title)\t\(.updated_at)\t\(.labels | map(.name) | join(","))"' 2>/dev/null || echo "")
+          PRS_FETCHED=$(echo "$PRS_LIST" | grep -c . || echo "0")
+
+          TOTAL_ITEMS=$((ISSUES_FETCHED + PRS_FETCHED))
+          echo ""
+          echo "Processing batch containing $TOTAL_ITEMS items..."
+          echo ""
+
+          # Process issues to mark as stale (using here-string to avoid subshell)
+          if [ -n "$ISSUES_LIST" ] && [ "$ISSUES_LIST" != "" ]; then
+            while IFS=$'\t' read -r number title updated_at labels; do
+              if [ -z "$number" ]; then continue; fi
+              
+              # Check if already has stale label (exact match using comma boundaries)
+              if echo ",$labels," | grep -qF ",${{ env.STALE_LABEL }},"; then
+                # Check if should be closed
+                if [[ "$updated_at" < "$CLOSE_DATE" ]]; then
+                  echo "[#$number] Issue #$number - \"$title\""
+                  echo "         -> Closing (stale for more than ${{ env.DAYS_BEFORE_CLOSE }} days)"
+                  if [ "$DRY_RUN" != "true" ]; then
+                    gh api -X POST "repos/$FULL_REPO/issues/$number/comments" -f body="${{ env.CLOSE_ISSUE_MESSAGE }}" 2>/dev/null || true
+                    gh api -X PATCH "repos/$FULL_REPO/issues/$number" -f state="closed" -f state_reason="not_planned" 2>/dev/null || true
+                    ((API_CALLS+=2)) || true
+                    ((OPERATIONS_PERFORMED+=2)) || true
+                  fi
+                  ((ISSUES_CLOSED++)) || true
+                else
+                  echo "[#$number] Issue #$number - Already stale, not yet due for close"
+                fi
+              else
+                # Check if should be marked stale
+                if [[ "$updated_at" < "$STALE_DATE" ]]; then
+                  echo "[#$number] Issue #$number - \"$title\""
+                  echo "         -> Marking as stale (inactive for more than ${{ env.DAYS_BEFORE_STALE }} days)"
+                  if [ "$DRY_RUN" != "true" ]; then
+                    gh api -X POST "repos/$FULL_REPO/issues/$number/labels" -f "labels[]=${{ env.STALE_LABEL }}" 2>/dev/null || true
+                    gh api -X POST "repos/$FULL_REPO/issues/$number/comments" -f body="${{ env.STALE_ISSUE_MESSAGE }}" 2>/dev/null || true
+                    ((API_CALLS+=2)) || true
+                    ((OPERATIONS_PERFORMED+=2)) || true
+                  fi
+                  ((ISSUES_MARKED_STALE++)) || true
+                fi
+              fi
+            done <<< "$ISSUES_LIST"
+          fi
+
+          # Process PRs to mark as stale (using here-string to avoid subshell)
+          if [ -n "$PRS_LIST" ] && [ "$PRS_LIST" != "" ]; then
+            while IFS=$'\t' read -r number title updated_at labels; do
+              if [ -z "$number" ]; then continue; fi
+              
+              # Check if already has stale label (exact match using comma boundaries)
+              if echo ",$labels," | grep -qF ",${{ env.STALE_LABEL }},"; then
+                # Check if should be closed
+                if [[ "$updated_at" < "$CLOSE_DATE" ]]; then
+                  echo "[#$number] Pull request #$number - \"$title\""
+                  echo "         -> Closing (stale for more than ${{ env.DAYS_BEFORE_CLOSE }} days)"
+                  if [ "$DRY_RUN" != "true" ]; then
+                    gh api -X POST "repos/$FULL_REPO/issues/$number/comments" -f body="${{ env.CLOSE_PR_MESSAGE }}" 2>/dev/null || true
+                    gh api -X PATCH "repos/$FULL_REPO/issues/$number" -f state="closed" 2>/dev/null || true
+                    ((API_CALLS+=2)) || true
+                    ((OPERATIONS_PERFORMED+=2)) || true
+                  fi
+                  ((PRS_CLOSED++)) || true
+                else
+                  echo "[#$number] Pull request #$number - Already stale, not yet due for close"
+                fi
+              else
+                # Check if should be marked stale
+                if [[ "$updated_at" < "$STALE_DATE" ]]; then
+                  echo "[#$number] Pull request #$number - \"$title\""
+                  echo "         -> Marking as stale (inactive for more than ${{ env.DAYS_BEFORE_STALE }} days)"
+                  if [ "$DRY_RUN" != "true" ]; then
+                    gh api -X POST "repos/$FULL_REPO/issues/$number/labels" -f "labels[]=${{ env.STALE_LABEL }}" 2>/dev/null || true
+                    gh api -X POST "repos/$FULL_REPO/issues/$number/comments" -f body="${{ env.STALE_PR_MESSAGE }}" 2>/dev/null || true
+                    ((API_CALLS+=2)) || true
+                    ((OPERATIONS_PERFORMED+=2)) || true
+                  fi
+                  ((PRS_MARKED_STALE++)) || true
+                fi
+              fi
+            done <<< "$PRS_LIST"
+          fi
+
+          echo ""
+          echo "Batch processed."
+          echo ""
+
+          # Get API rate limit info
+          RATE_INFO=$(gh api rate_limit 2>/dev/null || echo '{"rate":{"remaining":"unknown","reset":0}}')
+          ((API_CALLS++)) || true
+          RATE_REMAINING=$(echo "$RATE_INFO" | jq -r '.rate.remaining // "unknown"')
+          RATE_RESET=$(echo "$RATE_INFO" | jq -r '.rate.reset // 0')
+          if [ "$RATE_RESET" != "0" ] && [ "$RATE_RESET" != "unknown" ]; then
+            RATE_RESET_DATE=$(date -d "@$RATE_RESET" 2>/dev/null || echo "unknown")
+          else
+            RATE_RESET_DATE="unknown"
+          fi
+
+          # Print statistics
+          echo "========================================"
+          echo "Statistics for $FULL_REPO:"
+          echo "========================================"
+          echo ""
+          echo "Fetched items: $TOTAL_ITEMS"
+          echo "  - Issues: $ISSUES_FETCHED"
+          echo "  - PRs   : $PRS_FETCHED"
+          echo ""
+          echo "Actions taken:"
+          echo "  - Issues marked stale: $ISSUES_MARKED_STALE"
+          echo "  - PRs marked stale   : $PRS_MARKED_STALE"
+          echo "  - Issues closed      : $ISSUES_CLOSED"
+          echo "  - PRs closed         : $PRS_CLOSED"
+          echo ""
+          echo "API usage:"
+          echo "  - API calls made     : $API_CALLS"
+          echo "  - Rate limit remaining: $RATE_REMAINING"
+          echo "  - Rate limit resets  : $RATE_RESET_DATE"
+          echo ""
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "NOTE: Dry run mode - no actual changes were made"
+            echo ""
+          fi
+          echo "Completed processing $FULL_REPO"
+          echo "========================================"
+
+  summary:
+    needs: [get-repositories, process-stale]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Organization Stale Management Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Organization:** ${{ inputs.org_name || github.repository_owner }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dry Run:** ${{ inputs.dry_run || 'false' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Stale After:** ${{ env.DAYS_BEFORE_STALE }} days" >> $GITHUB_STEP_SUMMARY
+          echo "- **Close After:** ${{ env.DAYS_BEFORE_CLOSE }} days" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- Stale Label: \`${{ env.STALE_LABEL }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Job Status" >> $GITHUB_STEP_SUMMARY
+          echo "- Get Repositories: ${{ needs.get-repositories.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Process Stale: ${{ needs.process-stale.result }}" >> $GITHUB_STEP_SUMMARY
