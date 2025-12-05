@@ -6,8 +6,9 @@ Automatically manages stale issues and pull requests across all repositories in 
 
 1. **Scans all non-archived repositories** in the organization
 2. **Marks items as stale** after 30 days of inactivity by adding a `stale` label
-3. **Closes stale items** after an additional 5 days of inactivity
-4. **Sends notifications** (comments) only on PRs, not issues
+3. **Removes stale label** if there's new activity on a stale item
+4. **Closes stale items** after an additional 5 days of inactivity (if no activity)
+5. **Sends notifications** (comments) only on PRs, not issues
 
 ## Schedule
 
@@ -48,6 +49,17 @@ Add the `do not close` label to any PR you want to keep open indefinitely.
 
 PRs with this label will be skipped entirely - they won't be marked stale or closed.
 
+## Stale Label Removal
+
+If a PR or issue has the `stale` label but receives new activity (comment, commit, etc.), the workflow automatically removes the stale label on the next run. This resets the close countdown.
+
+**Example timeline:**
+1. Day 0: PR opened
+2. Day 30: No activity, PR marked as stale
+3. Day 32: Author pushes a commit
+4. Day 33 (next workflow run): Stale label removed
+5. Day 63: If no further activity, PR marked as stale again
+
 ## Notifications
 
 | Item Type | Marked Stale | Closed |
@@ -57,20 +69,16 @@ PRs with this label will be skipped entirely - they won't be marked stale or clo
 
 PR authors receive GitHub notifications when their PR is marked stale or closed.
 
-## Required Setup
+## Label Management
 
-### Repository Secret
+The workflow automatically creates required labels in each repository if they don't exist:
 
-Create a secret named `GH_ORG_TOKEN` with a Personal Access Token that has:
-- `repo` scope (full access to repositories)
-- `read:org` scope (read organization membership)
+| Label | Color | Description |
+|-------|-------|-------------|
+| `stale` | Gray | Marks inactive issues/PRs |
+| `do not close` | Green | Exempts PRs from stale management |
 
-### Permissions
-
-The workflow requires these permissions:
-- `contents: read`
-- `issues: write`
-- `pull-requests: write`
+No manual label creation is needed.
 
 ## Summary Report
 

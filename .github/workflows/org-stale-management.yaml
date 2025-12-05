@@ -131,6 +131,8 @@ jobs:
           PRS_FETCHED=0
           ISSUES_MARKED_STALE=0
           PRS_MARKED_STALE=0
+          ISSUES_UNSTALED=0
+          PRS_UNSTALED=0
           ISSUES_CLOSED=0
           PRS_CLOSED=0
           OPERATIONS_PERFORMED=0
@@ -155,8 +157,44 @@ jobs:
           echo "  - Days before stale: ${{ env.DAYS_BEFORE_STALE }}"
           echo "  - Days before close: ${{ env.DAYS_BEFORE_CLOSE }}"
           echo "  - Stale label: ${{ env.STALE_LABEL }}"
+          echo "  - Exempt PR label: ${{ env.EXEMPT_PR_LABEL }}"
           echo "  - Stale threshold: $STALE_DATE"
           echo "  - Close threshold: $CLOSE_DATE"
+          echo ""
+
+          # Ensure required labels exist in the repository
+          echo "Checking for required labels..."
+
+          # Check and create stale label if it doesn't exist
+          if ! gh api "repos/$FULL_REPO/labels/${{ env.STALE_LABEL }}" --silent 2>/dev/null; then
+            echo "  Creating '${{ env.STALE_LABEL }}' label..."
+            if [ "$DRY_RUN" != "true" ]; then
+              gh api -X POST "repos/$FULL_REPO/labels" \
+                -f name="${{ env.STALE_LABEL }}" \
+                -f color="ededed" \
+                -f description="This issue or PR has been marked as stale due to inactivity" 2>/dev/null || true
+              ((API_CALLS++)) || true
+            fi
+          else
+            echo "  '${{ env.STALE_LABEL }}' label exists"
+          fi
+          ((API_CALLS++)) || true
+
+          # Check and create exempt label if it doesn't exist
+          EXEMPT_LABEL_ENCODED=$(echo "${{ env.EXEMPT_PR_LABEL }}" | jq -sRr @uri)
+          if ! gh api "repos/$FULL_REPO/labels/$EXEMPT_LABEL_ENCODED" --silent 2>/dev/null; then
+            echo "  Creating '${{ env.EXEMPT_PR_LABEL }}' label..."
+            if [ "$DRY_RUN" != "true" ]; then
+              gh api -X POST "repos/$FULL_REPO/labels" \
+                -f name="${{ env.EXEMPT_PR_LABEL }}" \
+                -f color="0e8a16" \
+                -f description="This PR will not be marked as stale or closed automatically" 2>/dev/null || true
+              ((API_CALLS++)) || true
+            fi
+          else
+            echo "  '${{ env.EXEMPT_PR_LABEL }}' label exists"
+          fi
+          ((API_CALLS++)) || true
           echo ""
 
           # Fetch all open issues (excluding PRs)
@@ -197,8 +235,18 @@ jobs:
               
               # Check if already has stale label (exact match using comma boundaries)
               if echo ",$labels," | grep -qF ",${{ env.STALE_LABEL }},"; then
+                # Check if there's been recent activity (should remove stale label)
+                if [[ "$updated_at" > "$STALE_DATE" ]]; then
+                  echo "[#$number] Issue #$number - \"$title\""
+                  echo "         -> Removing stale label (activity detected)"
+                  if [ "$DRY_RUN" != "true" ]; then
+                    gh api -X DELETE "repos/$FULL_REPO/issues/$number/labels/${{ env.STALE_LABEL }}" 2>/dev/null || true
+                    ((API_CALLS++)) || true
+                    ((OPERATIONS_PERFORMED++)) || true
+                  fi
+                  ((ISSUES_UNSTALED++)) || true
                 # Check if should be closed
-                if [[ "$updated_at" < "$CLOSE_DATE" ]]; then
+                elif [[ "$updated_at" < "$CLOSE_DATE" ]]; then
                   echo "[#$number] Issue #$number - \"$title\""
                   echo "         -> Closing (stale for more than ${{ env.DAYS_BEFORE_CLOSE }} days)"
                   if [ "$DRY_RUN" != "true" ]; then
@@ -241,8 +289,18 @@ jobs:
               
               # Check if already has stale label (exact match using comma boundaries)
               if echo ",$labels," | grep -qF ",${{ env.STALE_LABEL }},"; then
+                # Check if there's been recent activity (should remove stale label)
+                if [[ "$updated_at" > "$STALE_DATE" ]]; then
+                  echo "[#$number] Pull request #$number - \"$title\""
+                  echo "         -> Removing stale label (activity detected)"
+                  if [ "$DRY_RUN" != "true" ]; then
+                    gh api -X DELETE "repos/$FULL_REPO/issues/$number/labels/${{ env.STALE_LABEL }}" 2>/dev/null || true
+                    ((API_CALLS++)) || true
+                    ((OPERATIONS_PERFORMED++)) || true
+                  fi
+                  ((PRS_UNSTALED++)) || true
                 # Check if should be closed
-                if [[ "$updated_at" < "$CLOSE_DATE" ]]; then
+                elif [[ "$updated_at" < "$CLOSE_DATE" ]]; then
                   echo "[#$number] Pull request #$number - \"$title\""
                   echo "         -> Closing (stale for more than ${{ env.DAYS_BEFORE_CLOSE }} days)"
                   if [ "$DRY_RUN" != "true" ]; then
@@ -297,10 +355,12 @@ jobs:
           echo "  - PRs   : $PRS_FETCHED"
           echo ""
           echo "Actions taken:"
-          echo "  - Issues marked stale: $ISSUES_MARKED_STALE"
-          echo "  - PRs marked stale   : $PRS_MARKED_STALE"
-          echo "  - Issues closed      : $ISSUES_CLOSED"
-          echo "  - PRs closed         : $PRS_CLOSED"
+          echo "  - Issues marked stale : $ISSUES_MARKED_STALE"
+          echo "  - PRs marked stale    : $PRS_MARKED_STALE"
+          echo "  - Issues unstaled     : $ISSUES_UNSTALED"
+          echo "  - PRs unstaled        : $PRS_UNSTALED"
+          echo "  - Issues closed       : $ISSUES_CLOSED"
+          echo "  - PRs closed          : $PRS_CLOSED"
           echo ""
           echo "API usage:"
           echo "  - API calls made     : $API_CALLS"
@@ -321,12 +381,14 @@ jobs:
           STATS_PRS_FETCHED=$((PRS_FETCHED + 0))
           STATS_ISSUES_MARKED_STALE=$((ISSUES_MARKED_STALE + 0))
           STATS_PRS_MARKED_STALE=$((PRS_MARKED_STALE + 0))
+          STATS_ISSUES_UNSTALED=$((ISSUES_UNSTALED + 0))
+          STATS_PRS_UNSTALED=$((PRS_UNSTALED + 0))
           STATS_ISSUES_CLOSED=$((ISSUES_CLOSED + 0))
           STATS_PRS_CLOSED=$((PRS_CLOSED + 0))
           STATS_API_CALLS=$((API_CALLS + 0))
           STATS_OPERATIONS=$((OPERATIONS_PERFORMED + 0))
 
-          echo "{\"repo\":\"$REPO\",\"issues_fetched\":$STATS_ISSUES_FETCHED,\"prs_fetched\":$STATS_PRS_FETCHED,\"issues_marked_stale\":$STATS_ISSUES_MARKED_STALE,\"prs_marked_stale\":$STATS_PRS_MARKED_STALE,\"issues_closed\":$STATS_ISSUES_CLOSED,\"prs_closed\":$STATS_PRS_CLOSED,\"api_calls\":$STATS_API_CALLS,\"operations_performed\":$STATS_OPERATIONS}" > "stats/$REPO.json"
+          echo "{\"repo\":\"$REPO\",\"issues_fetched\":$STATS_ISSUES_FETCHED,\"prs_fetched\":$STATS_PRS_FETCHED,\"issues_marked_stale\":$STATS_ISSUES_MARKED_STALE,\"prs_marked_stale\":$STATS_PRS_MARKED_STALE,\"issues_unstaled\":$STATS_ISSUES_UNSTALED,\"prs_unstaled\":$STATS_PRS_UNSTALED,\"issues_closed\":$STATS_ISSUES_CLOSED,\"prs_closed\":$STATS_PRS_CLOSED,\"api_calls\":$STATS_API_CALLS,\"operations_performed\":$STATS_OPERATIONS}" > "stats/$REPO.json"
 
           echo "Saved statistics to stats/$REPO.json:"
           cat "stats/$REPO.json"
@@ -382,6 +444,8 @@ jobs:
           TOTAL_PRS_FETCHED=0
           TOTAL_ISSUES_MARKED_STALE=0
           TOTAL_PRS_MARKED_STALE=0
+          TOTAL_ISSUES_UNSTALED=0
+          TOTAL_PRS_UNSTALED=0
           TOTAL_ISSUES_CLOSED=0
           TOTAL_PRS_CLOSED=0
           TOTAL_API_CALLS=0
@@ -401,6 +465,8 @@ jobs:
                 TOTAL_PRS_FETCHED=$((TOTAL_PRS_FETCHED + $(jq -r '.prs_fetched // 0' "$stats_file")))
                 TOTAL_ISSUES_MARKED_STALE=$((TOTAL_ISSUES_MARKED_STALE + $(jq -r '.issues_marked_stale // 0' "$stats_file")))
                 TOTAL_PRS_MARKED_STALE=$((TOTAL_PRS_MARKED_STALE + $(jq -r '.prs_marked_stale // 0' "$stats_file")))
+                TOTAL_ISSUES_UNSTALED=$((TOTAL_ISSUES_UNSTALED + $(jq -r '.issues_unstaled // 0' "$stats_file")))
+                TOTAL_PRS_UNSTALED=$((TOTAL_PRS_UNSTALED + $(jq -r '.prs_unstaled // 0' "$stats_file")))
                 TOTAL_ISSUES_CLOSED=$((TOTAL_ISSUES_CLOSED + $(jq -r '.issues_closed // 0' "$stats_file")))
                 TOTAL_PRS_CLOSED=$((TOTAL_PRS_CLOSED + $(jq -r '.prs_closed // 0' "$stats_file")))
                 TOTAL_API_CALLS=$((TOTAL_API_CALLS + $(jq -r '.api_calls // 0' "$stats_file")))
@@ -411,12 +477,14 @@ jobs:
 
           TOTAL_FETCHED=$((TOTAL_ISSUES_FETCHED + TOTAL_PRS_FETCHED))
           TOTAL_MARKED_STALE=$((TOTAL_ISSUES_MARKED_STALE + TOTAL_PRS_MARKED_STALE))
+          TOTAL_UNSTALED=$((TOTAL_ISSUES_UNSTALED + TOTAL_PRS_UNSTALED))
           TOTAL_CLOSED=$((TOTAL_ISSUES_CLOSED + TOTAL_PRS_CLOSED))
 
           echo "| Metric | Issues | PRs | Total |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|--------|-----|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Fetched | $TOTAL_ISSUES_FETCHED | $TOTAL_PRS_FETCHED | $TOTAL_FETCHED |" >> $GITHUB_STEP_SUMMARY
           echo "| Marked Stale | $TOTAL_ISSUES_MARKED_STALE | $TOTAL_PRS_MARKED_STALE | $TOTAL_MARKED_STALE |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unstaled | $TOTAL_ISSUES_UNSTALED | $TOTAL_PRS_UNSTALED | $TOTAL_UNSTALED |" >> $GITHUB_STEP_SUMMARY
           echo "| Closed | $TOTAL_ISSUES_CLOSED | $TOTAL_PRS_CLOSED | $TOTAL_CLOSED |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Repositories Processed:** $REPOS_PROCESSED" >> $GITHUB_STEP_SUMMARY
