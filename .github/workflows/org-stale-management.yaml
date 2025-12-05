@@ -192,10 +192,10 @@ jobs:
                   echo "[#$number] Issue #$number - \"$title\""
                   echo "         -> Closing (stale for more than ${{ env.DAYS_BEFORE_CLOSE }} days)"
                   if [ "$DRY_RUN" != "true" ]; then
-                    gh api -X POST "repos/$FULL_REPO/issues/$number/comments" -f body="${{ env.CLOSE_ISSUE_MESSAGE }}" 2>/dev/null || true
+                    # No comment for issues (to avoid notifications) - only close
                     gh api -X PATCH "repos/$FULL_REPO/issues/$number" -f state="closed" -f state_reason="not_planned" 2>/dev/null || true
-                    ((API_CALLS+=2)) || true
-                    ((OPERATIONS_PERFORMED+=2)) || true
+                    ((API_CALLS++)) || true
+                    ((OPERATIONS_PERFORMED++)) || true
                   fi
                   ((ISSUES_CLOSED++)) || true
                 else
@@ -207,10 +207,10 @@ jobs:
                   echo "[#$number] Issue #$number - \"$title\""
                   echo "         -> Marking as stale (inactive for more than ${{ env.DAYS_BEFORE_STALE }} days)"
                   if [ "$DRY_RUN" != "true" ]; then
+                    # No comment for issues (to avoid notifications) - only add label
                     gh api -X POST "repos/$FULL_REPO/issues/$number/labels" -f "labels[]=${{ env.STALE_LABEL }}" 2>/dev/null || true
-                    gh api -X POST "repos/$FULL_REPO/issues/$number/comments" -f body="${{ env.STALE_ISSUE_MESSAGE }}" 2>/dev/null || true
-                    ((API_CALLS+=2)) || true
-                    ((OPERATIONS_PERFORMED+=2)) || true
+                    ((API_CALLS++)) || true
+                    ((OPERATIONS_PERFORMED++)) || true
                   fi
                   ((ISSUES_MARKED_STALE++)) || true
                 fi
@@ -298,11 +298,42 @@ jobs:
           echo "Completed processing $FULL_REPO"
           echo "========================================"
 
+          # Save statistics to file for aggregation
+          mkdir -p stats
+          cat > "stats/$REPO.json" << EOF
+          {
+            "repo": "$REPO",
+            "issues_fetched": $ISSUES_FETCHED,
+            "prs_fetched": $PRS_FETCHED,
+            "issues_marked_stale": $ISSUES_MARKED_STALE,
+            "prs_marked_stale": $PRS_MARKED_STALE,
+            "issues_closed": $ISSUES_CLOSED,
+            "prs_closed": $PRS_CLOSED,
+            "api_calls": $API_CALLS,
+            "operations_performed": $OPERATIONS_PERFORMED
+          }
+          EOF
+
+      - name: Upload statistics
+        uses: actions/upload-artifact@v4
+        with:
+          name: stats-${{ matrix.repo }}
+          path: stats/
+          retention-days: 1
+
   summary:
     needs: [get-repositories, process-stale]
     runs-on: ubuntu-latest
     if: always()
     steps:
+      - name: Download all statistics
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stats-*
+          path: all-stats
+          merge-multiple: true
+        continue-on-error: true
+
       - name: Generate summary
         env:
           GH_TOKEN: ${{ secrets.GH_ORG_TOKEN }}
@@ -319,11 +350,53 @@ jobs:
           echo "- **Close After:** ${{ env.DAYS_BEFORE_CLOSE }} days" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
+          # Aggregate statistics from all repository runs
+          echo "### Actions Taken This Run" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          TOTAL_ISSUES_FETCHED=0
+          TOTAL_PRS_FETCHED=0
+          TOTAL_ISSUES_MARKED_STALE=0
+          TOTAL_PRS_MARKED_STALE=0
+          TOTAL_ISSUES_CLOSED=0
+          TOTAL_PRS_CLOSED=0
+          TOTAL_API_CALLS=0
+          REPOS_PROCESSED=0
+
+          if [ -d "all-stats" ]; then
+            for stats_file in all-stats/*.json; do
+              if [ -f "$stats_file" ]; then
+                TOTAL_ISSUES_FETCHED=$((TOTAL_ISSUES_FETCHED + $(jq -r '.issues_fetched // 0' "$stats_file")))
+                TOTAL_PRS_FETCHED=$((TOTAL_PRS_FETCHED + $(jq -r '.prs_fetched // 0' "$stats_file")))
+                TOTAL_ISSUES_MARKED_STALE=$((TOTAL_ISSUES_MARKED_STALE + $(jq -r '.issues_marked_stale // 0' "$stats_file")))
+                TOTAL_PRS_MARKED_STALE=$((TOTAL_PRS_MARKED_STALE + $(jq -r '.prs_marked_stale // 0' "$stats_file")))
+                TOTAL_ISSUES_CLOSED=$((TOTAL_ISSUES_CLOSED + $(jq -r '.issues_closed // 0' "$stats_file")))
+                TOTAL_PRS_CLOSED=$((TOTAL_PRS_CLOSED + $(jq -r '.prs_closed // 0' "$stats_file")))
+                TOTAL_API_CALLS=$((TOTAL_API_CALLS + $(jq -r '.api_calls // 0' "$stats_file")))
+                ((REPOS_PROCESSED++)) || true
+              fi
+            done
+          fi
+
+          TOTAL_FETCHED=$((TOTAL_ISSUES_FETCHED + TOTAL_PRS_FETCHED))
+          TOTAL_MARKED_STALE=$((TOTAL_ISSUES_MARKED_STALE + TOTAL_PRS_MARKED_STALE))
+          TOTAL_CLOSED=$((TOTAL_ISSUES_CLOSED + TOTAL_PRS_CLOSED))
+
+          echo "| Metric | Issues | PRs | Total |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|-----|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Fetched | $TOTAL_ISSUES_FETCHED | $TOTAL_PRS_FETCHED | $TOTAL_FETCHED |" >> $GITHUB_STEP_SUMMARY
+          echo "| Marked Stale | $TOTAL_ISSUES_MARKED_STALE | $TOTAL_PRS_MARKED_STALE | $TOTAL_MARKED_STALE |" >> $GITHUB_STEP_SUMMARY
+          echo "| Closed | $TOTAL_ISSUES_CLOSED | $TOTAL_PRS_CLOSED | $TOTAL_CLOSED |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repositories Processed:** $REPOS_PROCESSED" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total API Calls:** $TOTAL_API_CALLS" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
           # Calculate close threshold date (items not updated in last DAYS_BEFORE_CLOSE days)
           CLOSE_DATE=$(date -d "-${{ env.DAYS_BEFORE_CLOSE }} days" +%Y-%m-%d)
 
           # Query total stale issues and PRs across the organization
-          echo "### Current Stale Items" >> $GITHUB_STEP_SUMMARY
+          echo "### Current Stale Items (after this run)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Search for open issues with stale label
