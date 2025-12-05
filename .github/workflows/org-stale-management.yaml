@@ -298,27 +298,28 @@ jobs:
           echo "Completed processing $FULL_REPO"
           echo "========================================"
 
-          # Save statistics to file for aggregation
+          # Save statistics to file for aggregation using jq
           mkdir -p stats
-          cat > "stats/$REPO.json" << EOF
-          {
-            "repo": "$REPO",
-            "issues_fetched": $ISSUES_FETCHED,
-            "prs_fetched": $PRS_FETCHED,
-            "issues_marked_stale": $ISSUES_MARKED_STALE,
-            "prs_marked_stale": $PRS_MARKED_STALE,
-            "issues_closed": $ISSUES_CLOSED,
-            "prs_closed": $PRS_CLOSED,
-            "api_calls": $API_CALLS,
-            "operations_performed": $OPERATIONS_PERFORMED
-          }
-          EOF
+          jq -n \
+            --arg repo "$REPO" \
+            --argjson issues_fetched "$ISSUES_FETCHED" \
+            --argjson prs_fetched "$PRS_FETCHED" \
+            --argjson issues_marked_stale "$ISSUES_MARKED_STALE" \
+            --argjson prs_marked_stale "$PRS_MARKED_STALE" \
+            --argjson issues_closed "$ISSUES_CLOSED" \
+            --argjson prs_closed "$PRS_CLOSED" \
+            --argjson api_calls "$API_CALLS" \
+            --argjson operations_performed "$OPERATIONS_PERFORMED" \
+            '{repo: $repo, issues_fetched: $issues_fetched, prs_fetched: $prs_fetched, issues_marked_stale: $issues_marked_stale, prs_marked_stale: $prs_marked_stale, issues_closed: $issues_closed, prs_closed: $prs_closed, api_calls: $api_calls, operations_performed: $operations_performed}' \
+            > "stats/$REPO.json"
+          echo "Saved statistics to stats/$REPO.json:"
+          cat "stats/$REPO.json"
 
       - name: Upload statistics
         uses: actions/upload-artifact@v4
         with:
           name: stats-${{ matrix.repo }}
-          path: stats/
+          path: stats/${{ matrix.repo }}.json
           retention-days: 1
 
   summary:
@@ -363,9 +364,16 @@ jobs:
           TOTAL_API_CALLS=0
           REPOS_PROCESSED=0
 
+          # Debug: Show what was downloaded
+          echo "Debug: Checking for downloaded artifacts..."
+          ls -la all-stats/ 2>/dev/null || echo "all-stats directory not found"
+          find all-stats -name "*.json" 2>/dev/null || echo "No JSON files found"
+
+          # Find all JSON files recursively (handles nested directories)
           if [ -d "all-stats" ]; then
-            for stats_file in all-stats/*.json; do
+            while IFS= read -r stats_file; do
               if [ -f "$stats_file" ]; then
+                echo "Processing: $stats_file"
                 TOTAL_ISSUES_FETCHED=$((TOTAL_ISSUES_FETCHED + $(jq -r '.issues_fetched // 0' "$stats_file")))
                 TOTAL_PRS_FETCHED=$((TOTAL_PRS_FETCHED + $(jq -r '.prs_fetched // 0' "$stats_file")))
                 TOTAL_ISSUES_MARKED_STALE=$((TOTAL_ISSUES_MARKED_STALE + $(jq -r '.issues_marked_stale // 0' "$stats_file")))
@@ -375,7 +383,7 @@ jobs:
                 TOTAL_API_CALLS=$((TOTAL_API_CALLS + $(jq -r '.api_calls // 0' "$stats_file")))
                 ((REPOS_PROCESSED++)) || true
               fi
-            done
+            done < <(find all-stats -name "*.json" 2>/dev/null)
           fi
 
           TOTAL_FETCHED=$((TOTAL_ISSUES_FETCHED + TOTAL_PRS_FETCHED))
