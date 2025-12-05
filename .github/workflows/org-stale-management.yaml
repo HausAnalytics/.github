@@ -16,6 +16,11 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
 env:
   DAYS_BEFORE_STALE: 30
   DAYS_BEFORE_CLOSE: 5
@@ -118,8 +123,8 @@ jobs:
           ISSUES_JSON=$(gh api "repos/$FULL_REPO/issues?state=open&per_page=100" --paginate 2>/dev/null || echo "[]")
           ((API_CALLS++)) || true
 
-          # Filter to only issues (not PRs) and count
-          ISSUES_LIST=$(echo "$ISSUES_JSON" | jq -r '.[] | select(.pull_request == null) | "\(.number)|\(.title)|\(.updated_at)|\(.labels | map(.name) | join(","))"' 2>/dev/null || echo "")
+          # Filter to only issues (not PRs) and count - using tab delimiter to handle pipes in titles
+          ISSUES_LIST=$(echo "$ISSUES_JSON" | jq -r '.[] | select(.pull_request == null) | "\(.number)\t\(.title)\t\(.updated_at)\t\(.labels | map(.name) | join(","))"' 2>/dev/null || echo "")
           ISSUES_FETCHED=$(echo "$ISSUES_LIST" | grep -c . || echo "0")
 
           # Fetch all open PRs
@@ -127,7 +132,8 @@ jobs:
           PRS_JSON=$(gh api "repos/$FULL_REPO/pulls?state=open&per_page=100" --paginate 2>/dev/null || echo "[]")
           ((API_CALLS++)) || true
 
-          PRS_LIST=$(echo "$PRS_JSON" | jq -r '.[] | "\(.number)|\(.title)|\(.updated_at)|\(.labels | map(.name) | join(","))"' 2>/dev/null || echo "")
+          # Using tab delimiter to handle pipes in titles
+          PRS_LIST=$(echo "$PRS_JSON" | jq -r '.[] | "\(.number)\t\(.title)\t\(.updated_at)\t\(.labels | map(.name) | join(","))"' 2>/dev/null || echo "")
           PRS_FETCHED=$(echo "$PRS_LIST" | grep -c . || echo "0")
 
           TOTAL_ITEMS=$((ISSUES_FETCHED + PRS_FETCHED))
@@ -135,13 +141,13 @@ jobs:
           echo "Processing batch containing $TOTAL_ITEMS items..."
           echo ""
 
-          # Process issues to mark as stale
+          # Process issues to mark as stale (using here-string to avoid subshell)
           if [ -n "$ISSUES_LIST" ] && [ "$ISSUES_LIST" != "" ]; then
-            echo "$ISSUES_LIST" | while IFS='|' read -r number title updated_at labels; do
+            while IFS=$'\t' read -r number title updated_at labels; do
               if [ -z "$number" ]; then continue; fi
               
-              # Check if already has stale label
-              if echo "$labels" | grep -q "${{ env.STALE_LABEL }}"; then
+              # Check if already has stale label (exact match using comma boundaries)
+              if echo ",$labels," | grep -qF ",${{ env.STALE_LABEL }},"; then
                 # Check if should be closed
                 if [[ "$updated_at" < "$CLOSE_DATE" ]]; then
                   echo "[#$number] Issue #$number - \"$title\""
@@ -170,16 +176,16 @@ jobs:
                   ((ISSUES_MARKED_STALE++)) || true
                 fi
               fi
-            done
+            done <<< "$ISSUES_LIST"
           fi
 
-          # Process PRs to mark as stale
+          # Process PRs to mark as stale (using here-string to avoid subshell)
           if [ -n "$PRS_LIST" ] && [ "$PRS_LIST" != "" ]; then
-            echo "$PRS_LIST" | while IFS='|' read -r number title updated_at labels; do
+            while IFS=$'\t' read -r number title updated_at labels; do
               if [ -z "$number" ]; then continue; fi
               
-              # Check if already has stale label
-              if echo "$labels" | grep -q "${{ env.STALE_LABEL }}"; then
+              # Check if already has stale label (exact match using comma boundaries)
+              if echo ",$labels," | grep -qF ",${{ env.STALE_LABEL }},"; then
                 # Check if should be closed
                 if [[ "$updated_at" < "$CLOSE_DATE" ]]; then
                   echo "[#$number] Pull request #$number - \"$title\""
@@ -208,7 +214,7 @@ jobs:
                   ((PRS_MARKED_STALE++)) || true
                 fi
               fi
-            done
+            done <<< "$PRS_LIST"
           fi
 
           echo ""
