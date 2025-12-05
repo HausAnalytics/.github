@@ -164,7 +164,11 @@ jobs:
 
           # Filter to only issues (not PRs) and count - using tab delimiter to handle pipes in titles
           ISSUES_LIST=$(echo "$ISSUES_JSON" | jq -r '.[] | select(.pull_request == null) | "\(.number)\t\(.title)\t\(.updated_at)\t\(.labels | map(.name) | join(","))"' 2>/dev/null || echo "")
-          ISSUES_FETCHED=$(echo "$ISSUES_LIST" | grep -c . || echo "0")
+          if [ -n "$ISSUES_LIST" ] && [ "$ISSUES_LIST" != "" ]; then
+            ISSUES_FETCHED=$(echo "$ISSUES_LIST" | wc -l | tr -d ' ')
+          else
+            ISSUES_FETCHED=0
+          fi
 
           # Fetch all open PRs
           echo "Fetching open pull requests..."
@@ -173,7 +177,11 @@ jobs:
 
           # Using tab delimiter to handle pipes in titles
           PRS_LIST=$(echo "$PRS_JSON" | jq -r '.[] | "\(.number)\t\(.title)\t\(.updated_at)\t\(.labels | map(.name) | join(","))"' 2>/dev/null || echo "")
-          PRS_FETCHED=$(echo "$PRS_LIST" | grep -c . || echo "0")
+          if [ -n "$PRS_LIST" ] && [ "$PRS_LIST" != "" ]; then
+            PRS_FETCHED=$(echo "$PRS_LIST" | wc -l | tr -d ' ')
+          else
+            PRS_FETCHED=0
+          fi
 
           TOTAL_ITEMS=$((ISSUES_FETCHED + PRS_FETCHED))
           echo ""
@@ -298,20 +306,20 @@ jobs:
           echo "Completed processing $FULL_REPO"
           echo "========================================"
 
-          # Save statistics to file for aggregation using jq
+          # Save statistics to file for aggregation
+          # Ensure all values are valid integers (default to 0 if empty or invalid)
           mkdir -p stats
-          jq -n \
-            --arg repo "$REPO" \
-            --argjson issues_fetched "$ISSUES_FETCHED" \
-            --argjson prs_fetched "$PRS_FETCHED" \
-            --argjson issues_marked_stale "$ISSUES_MARKED_STALE" \
-            --argjson prs_marked_stale "$PRS_MARKED_STALE" \
-            --argjson issues_closed "$ISSUES_CLOSED" \
-            --argjson prs_closed "$PRS_CLOSED" \
-            --argjson api_calls "$API_CALLS" \
-            --argjson operations_performed "$OPERATIONS_PERFORMED" \
-            '{repo: $repo, issues_fetched: $issues_fetched, prs_fetched: $prs_fetched, issues_marked_stale: $issues_marked_stale, prs_marked_stale: $prs_marked_stale, issues_closed: $issues_closed, prs_closed: $prs_closed, api_calls: $api_calls, operations_performed: $operations_performed}' \
-            > "stats/$REPO.json"
+          STATS_ISSUES_FETCHED=$((ISSUES_FETCHED + 0))
+          STATS_PRS_FETCHED=$((PRS_FETCHED + 0))
+          STATS_ISSUES_MARKED_STALE=$((ISSUES_MARKED_STALE + 0))
+          STATS_PRS_MARKED_STALE=$((PRS_MARKED_STALE + 0))
+          STATS_ISSUES_CLOSED=$((ISSUES_CLOSED + 0))
+          STATS_PRS_CLOSED=$((PRS_CLOSED + 0))
+          STATS_API_CALLS=$((API_CALLS + 0))
+          STATS_OPERATIONS=$((OPERATIONS_PERFORMED + 0))
+
+          echo "{\"repo\":\"$REPO\",\"issues_fetched\":$STATS_ISSUES_FETCHED,\"prs_fetched\":$STATS_PRS_FETCHED,\"issues_marked_stale\":$STATS_ISSUES_MARKED_STALE,\"prs_marked_stale\":$STATS_PRS_MARKED_STALE,\"issues_closed\":$STATS_ISSUES_CLOSED,\"prs_closed\":$STATS_PRS_CLOSED,\"api_calls\":$STATS_API_CALLS,\"operations_performed\":$STATS_OPERATIONS}" > "stats/$REPO.json"
+
           echo "Saved statistics to stats/$REPO.json:"
           cat "stats/$REPO.json"
 
