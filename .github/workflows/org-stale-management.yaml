@@ -42,6 +42,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_ORG_TOKEN }}
         run: |
+          set -e
           ORG="${{ inputs.org_name || 'HausAnalytics' }}"
 
           echo ""
@@ -53,8 +54,21 @@ jobs:
           echo "Filter: non-archived repositories with issues enabled"
           echo ""
 
+          # Verify token and API access
+          echo "Verifying API access..."
+          if ! gh api user --silent 2>&1; then
+            echo "ERROR: Failed to authenticate with GitHub API"
+            echo "Please ensure GH_ORG_TOKEN secret is set with appropriate permissions"
+            exit 1
+          fi
+          echo "API access verified."
+          echo ""
+
           # Get all non-archived repos with issues enabled
-          echo "Querying GitHub API..."
+          echo "Querying repositories for organization: $ORG"
+          echo "This may take a moment for large organizations..."
+          echo ""
+
           REPOS_RAW=$(gh api graphql -f query='
             query($org: String!, $cursor: String) {
               organization(login: $org) {
@@ -70,22 +84,35 @@ jobs:
                 }
               }
             }
-          ' -f org="$ORG" --paginate --jq '.data.organization.repositories.nodes[] | select(.hasIssuesEnabled) | .name' 2>/dev/null)
+          ' -f org="$ORG" --paginate --jq '.data.organization.repositories.nodes[] | select(.hasIssuesEnabled) | .name')
 
-          # Convert to JSON array
-          REPOS=$(echo "$REPOS_RAW" | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          REPO_COUNT=$(echo "$REPOS" | jq 'length')
+          if [ -z "$REPOS_RAW" ]; then
+            echo "WARNING: No repositories found. This could mean:"
+            echo "  - The organization has no non-archived repositories with issues enabled"
+            echo "  - The token lacks permission to view organization repositories"
+            echo "  - The organization name is incorrect"
+            REPOS="[]"
+            REPO_COUNT=0
+          else
+            # Convert to JSON array
+            REPOS=$(echo "$REPOS_RAW" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            REPO_COUNT=$(echo "$REPOS" | jq 'length')
+          fi
 
           echo ""
           echo "Found $REPO_COUNT repositories:"
           echo ""
 
           # List each repository
-          echo "$REPOS_RAW" | while read -r repo; do
-            if [ -n "$repo" ]; then
-              echo "  - $repo"
-            fi
-          done
+          if [ -n "$REPOS_RAW" ]; then
+            echo "$REPOS_RAW" | while read -r repo; do
+              if [ -n "$repo" ]; then
+                echo "  - $repo"
+              fi
+            done
+          else
+            echo "  (none)"
+          fi
 
           echo ""
           echo "========================================"
