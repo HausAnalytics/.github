@@ -304,17 +304,64 @@ jobs:
     if: always()
     steps:
       - name: Generate summary
+        env:
+          GH_TOKEN: ${{ secrets.GH_ORG_TOKEN }}
         run: |
+          ORG="${{ inputs.org_name || 'HausAnalytics' }}"
+          STALE_LABEL="${{ env.STALE_LABEL }}"
+
           echo "## Organization Stale Management Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Organization:** ${{ inputs.org_name || 'HausAnalytics' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Organization:** $ORG" >> $GITHUB_STEP_SUMMARY
           echo "- **Dry Run:** ${{ inputs.dry_run || 'false' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Stale After:** ${{ env.DAYS_BEFORE_STALE }} days" >> $GITHUB_STEP_SUMMARY
           echo "- **Close After:** ${{ env.DAYS_BEFORE_CLOSE }} days" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Calculate close threshold date (items not updated in last DAYS_BEFORE_CLOSE days)
+          CLOSE_DATE=$(date -d "-${{ env.DAYS_BEFORE_CLOSE }} days" +%Y-%m-%d)
+
+          # Query total stale issues and PRs across the organization
+          echo "### Current Stale Items" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Search for open issues with stale label
+          STALE_ISSUES=$(gh api "search/issues?q=org:$ORG+is:issue+is:open+label:$STALE_LABEL" --jq '.total_count' 2>/dev/null || echo "0")
+
+          # Search for open PRs with stale label
+          STALE_PRS=$(gh api "search/issues?q=org:$ORG+is:pr+is:open+label:$STALE_LABEL" --jq '.total_count' 2>/dev/null || echo "0")
+
+          TOTAL_STALE=$((STALE_ISSUES + STALE_PRS))
+
+          echo "| Type | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Stale Issues | $STALE_ISSUES |" >> $GITHUB_STEP_SUMMARY
+          echo "| Stale PRs | $STALE_PRS |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total** | **$TOTAL_STALE** |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Query stale items about to be closed (not updated since close threshold)
+          echo "### Items About to Close (stalled ${{ env.DAYS_BEFORE_CLOSE }}+ days after ${{ env.DAYS_BEFORE_STALE }}-day stale window)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Search for stale issues about to close
+          CLOSING_ISSUES=$(gh api "search/issues?q=org:$ORG+is:issue+is:open+label:$STALE_LABEL+updated:<$CLOSE_DATE" --jq '.total_count' 2>/dev/null || echo "0")
+
+          # Search for stale PRs about to close
+          CLOSING_PRS=$(gh api "search/issues?q=org:$ORG+is:pr+is:open+label:$STALE_LABEL+updated:<$CLOSE_DATE" --jq '.total_count' 2>/dev/null || echo "0")
+
+          TOTAL_CLOSING=$((CLOSING_ISSUES + CLOSING_PRS))
+
+          echo "| Type | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Issues closing soon | $CLOSING_ISSUES |" >> $GITHUB_STEP_SUMMARY
+          echo "| PRs closing soon | $CLOSING_PRS |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total** | **$TOTAL_CLOSING** |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
           echo "### Configuration" >> $GITHUB_STEP_SUMMARY
-          echo "- Stale Label: \`${{ env.STALE_LABEL }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Stale Label: \`$STALE_LABEL\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Job Status" >> $GITHUB_STEP_SUMMARY
           echo "- Get Repositories: ${{ needs.get-repositories.result }}" >> $GITHUB_STEP_SUMMARY
