@@ -13,7 +13,8 @@ on:
         type: boolean
       org_name:
         description: "Organization name to scan"
-        required: true
+        required: false
+        default: "HausAnalytics"
         type: string
 
 permissions:
@@ -41,12 +42,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_ORG_TOKEN }}
         run: |
-          ORG="${{ inputs.org_name || github.repository_owner }}"
+          ORG="${{ inputs.org_name || 'HausAnalytics' }}"
 
-          echo "Fetching non-archived repositories for organization: $ORG"
+          echo ""
+          echo "========================================"
+          echo "Fetching repositories..."
+          echo "========================================"
+          echo ""
+          echo "Organization: $ORG"
+          echo "Filter: non-archived repositories with issues enabled"
+          echo ""
 
           # Get all non-archived repos with issues enabled
-          REPOS=$(gh api graphql -f query='
+          echo "Querying GitHub API..."
+          REPOS_RAW=$(gh api graphql -f query='
             query($org: String!, $cursor: String) {
               organization(login: $org) {
                 repositories(first: 100, after: $cursor, isArchived: false) {
@@ -61,9 +70,27 @@ jobs:
                 }
               }
             }
-          ' -f org="$ORG" --paginate --jq '.data.organization.repositories.nodes[] | select(.hasIssuesEnabled) | .name' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          ' -f org="$ORG" --paginate --jq '.data.organization.repositories.nodes[] | select(.hasIssuesEnabled) | .name' 2>/dev/null)
 
-          echo "Found repositories: $REPOS"
+          # Convert to JSON array
+          REPOS=$(echo "$REPOS_RAW" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          REPO_COUNT=$(echo "$REPOS" | jq 'length')
+
+          echo ""
+          echo "Found $REPO_COUNT repositories:"
+          echo ""
+
+          # List each repository
+          echo "$REPOS_RAW" | while read -r repo; do
+            if [ -n "$repo" ]; then
+              echo "  - $repo"
+            fi
+          done
+
+          echo ""
+          echo "========================================"
+          echo ""
+
           echo "repos=$REPOS" >> $GITHUB_OUTPUT
 
   process-stale:
@@ -81,7 +108,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_ORG_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
         run: |
-          ORG="${{ inputs.org_name || github.repository_owner }}"
+          ORG="${{ inputs.org_name || 'HausAnalytics' }}"
           REPO="${{ matrix.repo }}"
           FULL_REPO="$ORG/$REPO"
 
@@ -269,7 +296,7 @@ jobs:
           echo "## Organization Stale Management Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Organization:** ${{ inputs.org_name || github.repository_owner }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Organization:** ${{ inputs.org_name || 'HausAnalytics' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Dry Run:** ${{ inputs.dry_run || 'false' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Stale After:** ${{ env.DAYS_BEFORE_STALE }} days" >> $GITHUB_STEP_SUMMARY
           echo "- **Close After:** ${{ env.DAYS_BEFORE_CLOSE }} days" >> $GITHUB_STEP_SUMMARY
