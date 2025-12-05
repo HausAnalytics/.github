@@ -64,27 +64,12 @@ jobs:
           echo "API access verified."
           echo ""
 
-          # Get all non-archived repos with issues enabled
+          # Get all non-archived repos with issues enabled using REST API
           echo "Querying repositories for organization: $ORG"
-          echo "This may take a moment for large organizations..."
           echo ""
 
-          REPOS_RAW=$(gh api graphql -f query='
-            query($org: String!, $cursor: String) {
-              organization(login: $org) {
-                repositories(first: 100, after: $cursor, isArchived: false) {
-                  pageInfo {
-                    hasNextPage
-                    endCursor
-                  }
-                  nodes {
-                    name
-                    hasIssuesEnabled
-                  }
-                }
-              }
-            }
-          ' -f org="$ORG" --paginate --jq '.data.organization.repositories.nodes[] | select(.hasIssuesEnabled) | .name')
+          # Use REST API - more reliable than GraphQL with pagination
+          REPOS_RAW=$(gh api "orgs/$ORG/repos" --paginate --jq '.[] | select(.archived == false) | select(.has_issues == true) | .name')
 
           if [ -z "$REPOS_RAW" ]; then
             echo "WARNING: No repositories found. This could mean:"
