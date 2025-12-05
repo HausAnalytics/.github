@@ -1,9 +1,9 @@
 name: "Organization Stale Issues and PRs Management"
 
 on:
-  # schedule:
-  #   # Run daily at 1:30 AM UTC
-  #   - cron: "30 1 * * *"
+  schedule:
+    # Run daily at 1:30 AM UTC (dry run only for scheduled runs)
+    - cron: "30 1 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -26,6 +26,7 @@ env:
   DAYS_BEFORE_STALE: 30
   DAYS_BEFORE_CLOSE: 5
   STALE_LABEL: "stale"
+  EXEMPT_PR_LABEL: "do not close"
   STALE_ISSUE_MESSAGE: "This issue is stale because it has been open 30 days with no activity. Remove stale label or comment or this will be closed in 5 days."
   STALE_PR_MESSAGE: "This PR is stale because it has been open 30 days with no activity. Remove stale label or comment or this will be closed in 5 days."
   CLOSE_ISSUE_MESSAGE: "This issue was closed because it has been stalled for 5 days with no activity."
@@ -118,7 +119,8 @@ jobs:
       - name: Process stale issues and PRs for ${{ matrix.repo }}
         env:
           GH_TOKEN: ${{ secrets.GH_ORG_TOKEN }}
-          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          # Force dry run for scheduled runs, otherwise use input value
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'true' || inputs.dry_run || 'false' }}
         run: |
           ORG="${{ inputs.org_name || 'HausAnalytics' }}"
           REPO="${{ matrix.repo }}"
@@ -230,6 +232,12 @@ jobs:
           if [ -n "$PRS_LIST" ] && [ "$PRS_LIST" != "" ]; then
             while IFS=$'\t' read -r number title updated_at labels; do
               if [ -z "$number" ]; then continue; fi
+              
+              # Skip PRs with exempt label (exact match using comma boundaries)
+              if echo ",$labels," | grep -qF ",${{ env.EXEMPT_PR_LABEL }},"; then
+                echo "[#$number] Pull request #$number - Skipped (has '${{ env.EXEMPT_PR_LABEL }}' label)"
+                continue
+              fi
               
               # Check if already has stale label (exact match using comma boundaries)
               if echo ",$labels," | grep -qF ",${{ env.STALE_LABEL }},"; then
@@ -350,11 +358,18 @@ jobs:
           ORG="${{ inputs.org_name || 'HausAnalytics' }}"
           STALE_LABEL="${{ env.STALE_LABEL }}"
 
+          # Determine if dry run (scheduled runs are always dry run)
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            IS_DRY_RUN="true (scheduled runs are dry run only)"
+          else
+            IS_DRY_RUN="${{ inputs.dry_run || 'false' }}"
+          fi
+
           echo "## Organization Stale Management Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Organization:** $ORG" >> $GITHUB_STEP_SUMMARY
-          echo "- **Dry Run:** ${{ inputs.dry_run || 'false' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dry Run:** $IS_DRY_RUN" >> $GITHUB_STEP_SUMMARY
           echo "- **Stale After:** ${{ env.DAYS_BEFORE_STALE }} days" >> $GITHUB_STEP_SUMMARY
           echo "- **Close After:** ${{ env.DAYS_BEFORE_CLOSE }} days" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -451,6 +466,7 @@ jobs:
 
           echo "### Configuration" >> $GITHUB_STEP_SUMMARY
           echo "- Stale Label: \`$STALE_LABEL\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Exempt PR Label: \`${{ env.EXEMPT_PR_LABEL }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Job Status" >> $GITHUB_STEP_SUMMARY
           echo "- Get Repositories: ${{ needs.get-repositories.result }}" >> $GITHUB_STEP_SUMMARY
