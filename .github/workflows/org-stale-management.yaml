@@ -602,17 +602,30 @@ jobs:
           echo "### PRs Exempt from Auto-Close (Needs Attention)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # URL encode the labels for the API query
-          EXEMPT_LABEL_QUERY=$(echo "${{ env.EXEMPT_PR_LABEL }}" | sed 's/ /%20/g')
-          TERRATEAM_LABEL_QUERY=$(echo "${{ env.TERRATEAM_FAILED_LABEL }}" | sed 's/ /%20/g')
+          # URL encode labels with spaces for the search query
+          EXEMPT_LABEL_ENCODED=$(echo "${{ env.EXEMPT_PR_LABEL }}" | jq -sRr @uri)
+          TERRATEAM_LABEL_ENCODED=$(echo "${{ env.TERRATEAM_FAILED_LABEL }}" | jq -sRr @uri)
 
-          # Search for PRs with "do not close" label
-          EXEMPT_PRS=$(gh api "search/issues?q=org:$ORG+is:pr+is:open+label:\"${{ env.EXEMPT_PR_LABEL }}\"&per_page=100" \
-            --jq '.items[] | "| [\(.repository_url | split("/") | .[-1])#\(.number)](\(.html_url)) | \(.title | .[0:60]) | `${{ env.EXEMPT_PR_LABEL }}` |"' 2>/dev/null || echo "")
+          echo "Searching for PRs with exempt labels..."
+
+          # Search for PRs with "do not close" label using gh search
+          EXEMPT_PRS=$(gh search prs --owner "$ORG" --state open --label "${{ env.EXEMPT_PR_LABEL }}" --json repository,number,title,url --jq '.[] | "| [\(.repository.name)#\(.number)](\(.url)) | \(.title[0:60]) | `do not close` |"' 2>/dev/null || echo "")
 
           # Search for PRs with "terrateam failed apply" label
-          TERRATEAM_FAILED_PRS=$(gh api "search/issues?q=org:$ORG+is:pr+is:open+label:\"${{ env.TERRATEAM_FAILED_LABEL }}\"&per_page=100" \
-            --jq '.items[] | "| [\(.repository_url | split("/") | .[-1])#\(.number)](\(.html_url)) | \(.title | .[0:60]) | `${{ env.TERRATEAM_FAILED_LABEL }}` |"' 2>/dev/null || echo "")
+          TERRATEAM_FAILED_PRS=$(gh search prs --owner "$ORG" --state open --label "${{ env.TERRATEAM_FAILED_LABEL }}" --json repository,number,title,url --jq '.[] | "| [\(.repository.name)#\(.number)](\(.url)) | \(.title[0:60]) | `terrateam failed apply` |"' 2>/dev/null || echo "")
+
+          # Count results
+          EXEMPT_COUNT=0
+          TERRATEAM_COUNT=0
+          if [ -n "$EXEMPT_PRS" ]; then
+            EXEMPT_COUNT=$(echo "$EXEMPT_PRS" | wc -l | tr -d ' ')
+          fi
+          if [ -n "$TERRATEAM_FAILED_PRS" ]; then
+            TERRATEAM_COUNT=$(echo "$TERRATEAM_FAILED_PRS" | wc -l | tr -d ' ')
+          fi
+
+          echo "Found $EXEMPT_COUNT PRs with 'do not close' label"
+          echo "Found $TERRATEAM_COUNT PRs with 'terrateam failed apply' label"
 
           # Combine and display
           if [ -n "$EXEMPT_PRS" ] || [ -n "$TERRATEAM_FAILED_PRS" ]; then
