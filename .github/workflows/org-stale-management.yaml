@@ -27,6 +27,7 @@ env:
   DAYS_BEFORE_CLOSE: 5
   STALE_LABEL: "stale"
   EXEMPT_PR_LABEL: "do not close"
+  TERRATEAM_FAILED_LABEL: "terrateam failed apply"
   STALE_ISSUE_MESSAGE: "This issue is stale because it has been open 30 days with no activity. Remove stale label or comment or this will be closed in 5 days."
   STALE_PR_MESSAGE: "This PR is stale because it has been open 30 days with no activity. Remove stale label or comment or this will be closed in 5 days."
   CLOSE_ISSUE_MESSAGE: "This issue was closed because it has been stalled for 5 days with no activity."
@@ -195,6 +196,35 @@ jobs:
             echo "  '${{ env.EXEMPT_PR_LABEL }}' label exists"
           fi
           ((API_CALLS++)) || true
+
+          # Check if this is a Terrateam-managed repository
+          IS_TERRATEAM_REPO="false"
+          if gh api "repos/$FULL_REPO/contents/.terrateam/config.yml" --silent 2>/dev/null; then
+            IS_TERRATEAM_REPO="true"
+            echo "  Terrateam repository detected (.terrateam/config.yml)"
+          elif gh api "repos/$FULL_REPO/contents/terrateam.yml" --silent 2>/dev/null; then
+            IS_TERRATEAM_REPO="true"
+            echo "  Terrateam repository detected (terrateam.yml)"
+          fi
+          ((API_CALLS++)) || true
+
+          # Create terrateam failed label if this is a terrateam repo and label doesn't exist
+          if [ "$IS_TERRATEAM_REPO" = "true" ]; then
+            TERRATEAM_LABEL_ENCODED=$(echo "${{ env.TERRATEAM_FAILED_LABEL }}" | jq -sRr @uri)
+            if ! gh api "repos/$FULL_REPO/labels/$TERRATEAM_LABEL_ENCODED" --silent 2>/dev/null; then
+              echo "  Creating '${{ env.TERRATEAM_FAILED_LABEL }}' label..."
+              if [ "$DRY_RUN" != "true" ]; then
+                gh api -X POST "repos/$FULL_REPO/labels" \
+                  -f name="${{ env.TERRATEAM_FAILED_LABEL }}" \
+                  -f color="d93f0b" \
+                  -f description="Terrateam apply failed - PR exempt from auto-close to prevent drift" 2>/dev/null || true
+                ((API_CALLS++)) || true
+              fi
+            else
+              echo "  '${{ env.TERRATEAM_FAILED_LABEL }}' label exists"
+            fi
+            ((API_CALLS++)) || true
+          fi
           echo ""
 
           # Fetch all open issues (excluding PRs)
@@ -285,6 +315,42 @@ jobs:
               if echo ",$labels," | grep -qF ",${{ env.EXEMPT_PR_LABEL }},"; then
                 echo "[#$number] Pull request #$number - Skipped (has '${{ env.EXEMPT_PR_LABEL }}' label)"
                 continue
+              fi
+              
+              # Skip PRs with terrateam failed label (exact match using comma boundaries)
+              if echo ",$labels," | grep -qF ",${{ env.TERRATEAM_FAILED_LABEL }},"; then
+                echo "[#$number] Pull request #$number - Skipped (has '${{ env.TERRATEAM_FAILED_LABEL }}' label)"
+                continue
+              fi
+              
+              # For Terrateam repos, check if there's a failed apply and add label if so
+              if [ "$IS_TERRATEAM_REPO" = "true" ]; then
+                # Get the latest Terrateam comment to check apply status
+                TERRATEAM_COMMENT=$(gh api "repos/$FULL_REPO/issues/$number/comments?per_page=100" \
+                  --jq '[.[] | select(.user.login == "terrateam[bot]" or .user.login == "terrateam")] | last // empty' 2>/dev/null)
+                ((API_CALLS++)) || true
+                
+                if [ -n "$TERRATEAM_COMMENT" ]; then
+                  COMMENT_BODY=$(echo "$TERRATEAM_COMMENT" | jq -r '.body // ""')
+                  
+                  # Check for failed apply indicators in the comment
+                  # Terrateam uses various indicators like "Apply Failed", "failed", error status
+                  if echo "$COMMENT_BODY" | grep -qiE "(apply.*failed|failed.*apply|:x:.*apply|apply.*:x:|error.*apply|apply.*error)"; then
+                    # Check if it doesn't already have the failed label
+                    if ! echo ",$labels," | grep -qF ",${{ env.TERRATEAM_FAILED_LABEL }},"; then
+                      echo "[#$number] Pull request #$number - \"$title\""
+                      echo "         -> Adding '${{ env.TERRATEAM_FAILED_LABEL }}' label (Terrateam apply failed)"
+                      if [ "$DRY_RUN" != "true" ]; then
+                        gh api -X POST "repos/$FULL_REPO/issues/$number/labels" \
+                          -f "labels[]=${{ env.TERRATEAM_FAILED_LABEL }}" 2>/dev/null || true
+                        ((API_CALLS++)) || true
+                        ((OPERATIONS_PERFORMED++)) || true
+                      fi
+                      # Skip further processing for this PR
+                      continue
+                    fi
+                  fi
+                fi
               fi
               
               # Check if already has stale label (exact match using comma boundaries)
@@ -532,9 +598,43 @@ jobs:
           echo "| **Total** | **$TOTAL_CLOSING** |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
+          # List PRs with exempt labels that need attention
+          echo "### PRs Exempt from Auto-Close (Needs Attention)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # URL encode the labels for the API query
+          EXEMPT_LABEL_QUERY=$(echo "${{ env.EXEMPT_PR_LABEL }}" | sed 's/ /%20/g')
+          TERRATEAM_LABEL_QUERY=$(echo "${{ env.TERRATEAM_FAILED_LABEL }}" | sed 's/ /%20/g')
+
+          # Search for PRs with "do not close" label
+          EXEMPT_PRS=$(gh api "search/issues?q=org:$ORG+is:pr+is:open+label:\"${{ env.EXEMPT_PR_LABEL }}\"&per_page=100" \
+            --jq '.items[] | "| [\(.repository_url | split("/") | .[-1])#\(.number)](\(.html_url)) | \(.title | .[0:60]) | `${{ env.EXEMPT_PR_LABEL }}` |"' 2>/dev/null || echo "")
+
+          # Search for PRs with "terrateam failed apply" label
+          TERRATEAM_FAILED_PRS=$(gh api "search/issues?q=org:$ORG+is:pr+is:open+label:\"${{ env.TERRATEAM_FAILED_LABEL }}\"&per_page=100" \
+            --jq '.items[] | "| [\(.repository_url | split("/") | .[-1])#\(.number)](\(.html_url)) | \(.title | .[0:60]) | `${{ env.TERRATEAM_FAILED_LABEL }}` |"' 2>/dev/null || echo "")
+
+          # Combine and display
+          if [ -n "$EXEMPT_PRS" ] || [ -n "$TERRATEAM_FAILED_PRS" ]; then
+            echo "| PR | Title | Label |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----|-------|-------|" >> $GITHUB_STEP_SUMMARY
+            
+            if [ -n "$EXEMPT_PRS" ]; then
+              echo "$EXEMPT_PRS" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            if [ -n "$TERRATEAM_FAILED_PRS" ]; then
+              echo "$TERRATEAM_FAILED_PRS" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "No PRs with exempt labels found." >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
           echo "### Configuration" >> $GITHUB_STEP_SUMMARY
           echo "- Stale Label: \`$STALE_LABEL\`" >> $GITHUB_STEP_SUMMARY
           echo "- Exempt PR Label: \`${{ env.EXEMPT_PR_LABEL }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Terrateam Failed Label: \`${{ env.TERRATEAM_FAILED_LABEL }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Job Status" >> $GITHUB_STEP_SUMMARY
           echo "- Get Repositories: ${{ needs.get-repositories.result }}" >> $GITHUB_STEP_SUMMARY

@@ -24,6 +24,7 @@ Automatically manages stale issues and pull requests across all repositories in 
 | Days before close | 5 |
 | Stale label | `stale` |
 | Exempt PR label | `do not close` |
+| Terrateam failed label | `terrateam failed apply` |
 
 ## How to Use
 
@@ -69,6 +70,23 @@ If a PR or issue has the `stale` label but receives new activity (comment, commi
 
 PR authors receive GitHub notifications when their PR is marked stale or closed.
 
+## Terrateam Integration
+
+For repositories managed by Terrateam (detected via `.terrateam/config.yml` or `terrateam.yml`), the workflow provides additional protection against infrastructure drift:
+
+1. **Detects failed applies** by checking the latest Terrateam bot comment on each PR
+2. **Adds `terrateam failed apply` label** if a failed apply is detected
+3. **Exempts these PRs** from being marked stale or closed
+
+This prevents accidental closure of PRs where a Terraform apply failed mid-execution, which could cause infrastructure drift.
+
+**Indicators checked for failed apply:**
+- "Apply Failed" or "Failed Apply"
+- Error status markers
+- Apply with error indicators
+
+PRs with the `terrateam failed apply` label will not be closed until the apply issue is resolved and the label is manually removed.
+
 ## Label Management
 
 The workflow automatically creates required labels in each repository if they don't exist:
@@ -77,6 +95,7 @@ The workflow automatically creates required labels in each repository if they do
 |-------|-------|-------------|
 | `stale` | Gray | Marks inactive issues/PRs |
 | `do not close` | Green | Exempts PRs from stale management |
+| `terrateam failed apply` | Red | Terrateam apply failed - prevents auto-close (Terrateam repos only) |
 
 No manual label creation is needed.
 
