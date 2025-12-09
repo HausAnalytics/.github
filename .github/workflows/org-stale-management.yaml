@@ -120,8 +120,6 @@ jobs:
       - name: Process stale issues and PRs for ${{ matrix.repo }}
         env:
           GH_TOKEN: ${{ secrets.GH_ORG_TOKEN }}
-          # Force dry run for scheduled runs, otherwise use input value
-          DRY_RUN: ${{ github.event_name == 'schedule' && 'true' || inputs.dry_run || 'false' }}
         run: |
           ORG="${{ inputs.org_name || 'HausAnalytics' }}"
           REPO="${{ matrix.repo }}"
